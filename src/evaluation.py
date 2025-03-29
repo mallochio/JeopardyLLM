@@ -6,8 +6,22 @@ from mlx_lm import generate, load
 import json
 from typing import List, Dict, Any, Optional
 from rag import JeopardyRAG
+import re
+import spacy
+import numpy as np
+from typing import List, Dict, Tuple, Any
+import logging
 
 logger = logging.getLogger(__name__)
+
+try:
+    nlp = spacy.load("en_core_web_md")
+    logger.info("Loaded spaCy model for evaluation metrics")
+except Exception as e:
+    logger.error(f"Failed to load spaCy model: {e}")
+    logger.warning("Using simplified metrics without NLP capabilities")
+    nlp = None
+
 
 def load_model_for_evaluation(model_name, adapter_path=None):
     """Load the model for evaluation."""
@@ -237,3 +251,209 @@ def evaluate_rag_enhanced_generation(model, tokenizer, data_path, rag_instance, 
     except Exception as e:
         logger.exception(f"RAG evaluation failed: {str(e)}")
         return None
+
+
+
+class JeopardyEvaluator:
+    """Evaluates factual accuracy and hallucination reduction in Jeopardy answers"""
+    
+    def __init__(self, use_rag: bool = True):
+        """
+        Initialize the evaluator
+        
+        Args:
+            use_rag: Whether to use RAG-specific metrics
+        """
+        self.use_rag = use_rag
+        self.metrics = {}
+    
+    def evaluate(self, 
+                 generated_answers: List[str], 
+                 correct_answers: List[str], 
+                 retrieved_contexts: List[List[str]] = None,
+                 base_model_answers: List[str] = None) -> Dict[str, float]:
+        """
+        Run all evaluation metrics
+        
+        Args:
+            generated_answers: List of model-generated answers
+            correct_answers: List of ground truth answers
+            retrieved_contexts: List of retrieved contexts used for each answer
+            base_model_answers: List of answers from base model without RAG
+            
+        Returns:
+            Dictionary of metric names and scores
+        """
+        if len(generated_answers) != len(correct_answers):
+            raise ValueError("Number of generated and correct answers must match")
+            
+        # Initialize results dictionary
+        results = {}
+        
+        # Calculate Answer Accuracy Score
+        acc_scores = []
+        for gen, correct in zip(generated_answers, correct_answers):
+            acc_scores.append(calculate_answer_accuracy(gen, correct, nlp))
+        results["answer_accuracy_score"] = np.mean(acc_scores)
+        
+        # Entity Consistency Score
+        if retrieved_contexts:
+            ecs_scores = []
+            for gen, contexts in zip(generated_answers, retrieved_contexts):
+                ecs_scores.append(calculate_entity_consistency(gen, contexts, nlp))
+            results["entity_consistency_score"] = np.mean(ecs_scores)
+        
+        # Hallucination Detection Score
+        if retrieved_contexts:
+            hds_scores = []
+            for gen, contexts in zip(generated_answers, retrieved_contexts):
+                hds_scores.append(detect_hallucinations(gen, contexts))
+            results["hallucination_score"] = np.mean(hds_scores)
+        
+        # RAG Enhancement Metric
+        if self.use_rag and base_model_answers:
+            results["rag_enhancement"] = measure_rag_enhancement(
+                base_model_answers, generated_answers, correct_answers, nlp)
+        
+        # Log the results
+        logger.info(f"Evaluation results: {results}")
+        self.metrics = results
+        return results
+    
+    def get_summary(self) -> str:
+        """Generate a human-readable summary of evaluation results"""
+        if not self.metrics:
+            return "No evaluation has been performed yet."
+            
+        summary = "=== Jeopardy LLM Evaluation Results ===\n"
+        
+        if "answer_accuracy_score" in self.metrics:
+            summary += f"Answer Accuracy: {self.metrics['answer_accuracy_score']:.2f}\n"
+            
+        if "entity_consistency_score" in self.metrics:
+            summary += f"Entity Consistency: {self.metrics['entity_consistency_score']:.2f}\n"
+            
+        if "hallucination_score" in self.metrics:
+            summary += f"Hallucination Score: {self.metrics['hallucination_score']:.2f} (lower is better)\n"
+            
+        if "rag_enhancement" in self.metrics:
+            rag_effect = "helped" if self.metrics['rag_enhancement'] > 0 else "hurt"
+            summary += f"RAG Enhancement: {self.metrics['rag_enhancement']:.2f} (RAG {rag_effect})\n"
+            
+        return summary
+    
+def detect_hallucinations(generated_answer, retrieved_contexts):
+    """
+    Identifies potential numerical, date, or fact hallucinations.
+    
+    Args:
+        generated_answer (str): The model's generated answer
+        retrieved_contexts (list): List of retrieved passages used as context
+        
+    Returns:
+        float: Hallucination likelihood score (lower is better)
+    """
+    # Extract numbers and dates from the generated answer
+    numbers = re.findall(r'\b\d+(?:\.\d+)?\b', generated_answer)
+    years = re.findall(r'\b(19|20)\d{2}\b', generated_answer)
+    dates = re.findall(r'\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b', generated_answer)
+    
+    total_facts = len(numbers) + len(years) + len(dates)
+    if total_facts == 0:
+        return 0.0  # No numeric facts to verify
+    
+    # Check if each number/date appears in any context
+    verified_facts = 0
+    for fact in numbers + years + dates:
+        if any(fact in context for context in retrieved_contexts):
+            verified_facts += 1
+    
+    # Return hallucination score (percentage of unverified facts)
+    return 1.0 - (verified_facts / total_facts) if total_facts > 0 else 0.0
+
+def calculate_entity_consistency(generated_answer, retrieved_contexts, nlp_model):
+    """
+    Check if entities mentioned in the generated answer appear in retrieved contexts.
+    
+    Args:
+        generated_answer (str): The model's generated answer
+        retrieved_contexts (list): List of retrieved passages used as context
+        nlp_model: A spaCy model with NER capability
+        
+    Returns:
+        float: Consistency score between 0-1
+    """
+    # Extract named entities from the generated answer
+    gen_doc = nlp_model(generated_answer)
+    generated_entities = set([ent.text.lower() for ent in gen_doc.ents])
+    
+    if not generated_entities:
+        return 1.0  # No entities to verify
+    
+    # Extract entities from contexts
+    context_entities = set()
+    for context in retrieved_contexts:
+        context_doc = nlp_model(context)
+        context_entities.update([ent.text.lower() for ent in context_doc.ents])
+    
+    # Calculate what percentage of generated entities appear in contexts
+    if generated_entities:
+        matched = sum(1 for entity in generated_entities if any(
+            entity in context.lower() for context in retrieved_contexts))
+        return matched / len(generated_entities)
+    
+    return 0.0
+
+def calculate_answer_accuracy(generated_answer, correct_answer, nlp_model):
+    """
+    Measures semantic similarity between generated answer and correct answer.
+    
+    Args:
+        generated_answer (str): The model's generated answer
+        correct_answer (str): The ground truth answer
+        nlp_model: A spaCy or similar NLP model for embeddings
+        
+    Returns:
+        float: Similarity score between 0-1
+    """
+    # Normalize answers (remove "what is", "who is", etc.)
+    gen_normalized = re.sub(r'^(what|who|where|when|how) (is|are|was|were) ', '', 
+                           generated_answer.lower().strip())
+    correct_normalized = re.sub(r'^(what|who|where|when|how) (is|are|was|were) ', '', 
+                               correct_answer.lower().strip())
+    
+    # Get document vectors
+    gen_doc = nlp_model(gen_normalized)
+    correct_doc = nlp_model(correct_normalized)
+    
+    # Calculate cosine similarity
+    if gen_doc.vector_norm and correct_doc.vector_norm:
+        return gen_doc.similarity(correct_doc)
+    return 0.0
+
+
+def measure_rag_enhancement(base_model_answers, rag_model_answers, correct_answers, nlp_model):
+    """
+    Quantifies how much RAG improves answer accuracy compared to the base model.
+    
+    Args:
+        base_model_answers (list): Answers from the base model without RAG
+        rag_model_answers (list): Answers from the model with RAG
+        correct_answers (list): Ground truth answers
+        nlp_model: NLP model for semantic similarity
+        
+    Returns:
+        float: Average improvement from using RAG (-1 to 1)
+    """
+    improvements = []
+    
+    for base, rag, correct in zip(base_model_answers, rag_model_answers, correct_answers):
+        # Calculate similarity scores
+        base_similarity = calculate_answer_accuracy(base, correct, nlp_model)
+        rag_similarity = calculate_answer_accuracy(rag, correct, nlp_model)
+        
+        # Improvement is difference in similarities
+        improvements.append(rag_similarity - base_similarity)
+    
+    # Return average improvement (positive means RAG helped)
+    return sum(improvements) / len(improvements) if improvements else 0.0
