@@ -5,10 +5,9 @@
 This project implements a Retrieval-Augmented Generation (RAG) system using a LoRA fine-tuned gemma-3:1B model to create an AI-driven Jeopardy! trainer that focuses on factual accuracy and reduces hallucinations.
 
 ## Features
-- **LoRA Fine-tuning**: Efficiently fine-tune the Gemma 3:1B model on M1 Macs using MLX
+- **LoRA Fine-tuning**: Fine-tunes the Gemma 3:1B model on M1 Macs using MLX
 - **Retrieval-Augmented Generation**: Enhance factual accuracy by retrieving relevant historical clues
-- **Custom Evaluation Metrics**: Track and measure factual consistency in generated content
-- **Comprehensive Logging**: Monitor training progress and evaluation results
+- **Custom Evaluation Metrics**: I'm testing out metrics to measure factual consistency in generated content
 
 ## Getting Started
 
