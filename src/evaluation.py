@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import logging
+import matplotlib.pyplot as plt
 from pathlib import Path
 from mlx_lm import generate, load
 import json
@@ -21,7 +22,6 @@ except Exception as e:
     logger.error(f"Failed to load spaCy model: {e}")
     logger.warning("Using simplified metrics without NLP capabilities")
     nlp = None
-
 
 def load_model_for_evaluation(model_name, adapter_path=None):
     """Load the model for evaluation."""
@@ -130,6 +130,9 @@ def evaluate_jeopardy(model, tokenizer, validation_data_path, n_samples=10, outp
                 }, f, indent=2)
             logger.info(f"Evaluation results saved to {output_file}")
         
+        # Generate visualization for factual accuracy
+        visualize_factual_accuracy(results, avg_factual_score, output_file)
+
         return {
             "results": results,
             "avg_factual_score": avg_factual_score
@@ -243,6 +246,9 @@ def evaluate_rag_enhanced_generation(model, tokenizer, data_path, rag_instance, 
                 }, f, indent=2)
             logger.info(f"RAG evaluation results saved to {output_file}")
         
+        # Generate visualization for RAG evaluation
+        visualize_rag_results(results, summary, output_file)
+
         return {
             "results": results,
             "summary": summary
@@ -252,6 +258,58 @@ def evaluate_rag_enhanced_generation(model, tokenizer, data_path, rag_instance, 
         logger.exception(f"RAG evaluation failed: {str(e)}")
         return None
 
+
+def visualize_factual_accuracy(results, avg_factual_score, output_file=None):
+    """
+    Visualize factual accuracy results as a bar chart.
+    """
+    prompts = [result["prompt"][:30] + "..." for result in results]
+    scores = [result["factual_score"] for result in results]
+
+    plt.figure(figsize=(10, 6))
+    plt.barh(prompts, scores, color="skyblue")
+    plt.axvline(avg_factual_score, color="red", linestyle="--", label="Average Score")
+    plt.xlabel("Factual Accuracy Score")
+    plt.ylabel("Sample Prompts")
+    plt.title("Factual Accuracy Evaluation")
+    plt.legend()
+    plt.tight_layout()
+
+    if output_file:
+        plot_path = output_file.replace(".json", "_factual_accuracy.png")
+        plt.savefig(plot_path)
+        logging.info(f"Factual accuracy plot saved to {plot_path}")
+    else:
+        plt.show()
+
+
+def visualize_rag_results(results, summary, output_file=None):
+    """
+    Visualize RAG evaluation results as a comparison bar chart.
+    """
+    clues = [result["clue"][:30] + "..." for result in results]
+    standard_scores = [result["standard_score"] for result in results]
+    rag_scores = [result["rag_score"] for result in results]
+
+    x = np.arange(len(clues))
+    width = 0.35
+
+    plt.figure(figsize=(12, 7))
+    plt.bar(x - width / 2, standard_scores, width, label="Standard")
+    plt.bar(x + width / 2, rag_scores, width, label="RAG-Enhanced", color="orange")
+    plt.xlabel("Clues")
+    plt.ylabel("Scores")
+    plt.title("RAG vs Standard Evaluation")
+    plt.xticks(x, clues, rotation=45, ha="right")
+    plt.legend()
+    plt.tight_layout()
+
+    if output_file:
+        plot_path = output_file.replace(".json", "_rag_comparison.png")
+        plt.savefig(plot_path)
+        logging.info(f"RAG comparison plot saved to {plot_path}")
+    else:
+        plt.show()
 
 
 class JeopardyEvaluator:
@@ -457,3 +515,4 @@ def measure_rag_enhancement(base_model_answers, rag_model_answers, correct_answe
     
     # Return average improvement (positive means RAG helped)
     return sum(improvements) / len(improvements) if improvements else 0.0
+
